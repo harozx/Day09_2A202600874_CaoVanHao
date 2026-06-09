@@ -1,8 +1,13 @@
 """Stage 2: LLM + RAG / Tools
 
 Adds retrieval-augmented generation and tool use to ground LLM responses
-in external data. The LLM can now search a legal knowledge base and
-calculate damages — but the orchestration is manual (one tool-call loop).
+in external data. The LLM can now search a legal knowledge base, check
+statute of limitations, and calculate damages.
+
+Includes all CODELAB exercises:
+  - Bài Tập 2.1: Thêm labor_law entry vào LEGAL_KNOWLEDGE
+  - Bài Tập 2.2: Tool check_statute_of_limitations
+  - Cải tiến: Multi-round tool loop (không giới hạn 1 pass)
 """
 
 import asyncio
@@ -18,7 +23,7 @@ from langchain_core.tools import tool
 from common.llm import get_llm
 
 # ---------------------------------------------------------------------------
-# Simulated legal knowledge base (in production, this would be a vector store)
+# Simulated legal knowledge base (in production: vector store / pgvector)
 # ---------------------------------------------------------------------------
 
 LEGAL_KNOWLEDGE = [
@@ -81,6 +86,25 @@ LEGAL_KNOWLEDGE = [
             "public interest (Winter v. Natural Resources Defense Council, 2008)."
         ),
     },
+    # -----------------------------------------------------------------
+    # Bài Tập 2.1: Thêm entry về luật lao động Việt Nam
+    # -----------------------------------------------------------------
+    {
+        "id": "labor_law",
+        "keywords": ["lao động", "sa thải", "hợp đồng lao động", "labor", "termination",
+                     "wrongful", "employment", "fired", "dismiss"],
+        "text": (
+            "Theo Bộ luật Lao động Việt Nam 2019 (BLLĐ 2019), người sử dụng lao động có thể "
+            "đơn phương chấm dứt hợp đồng trong các trường hợp hợp pháp: (1) người lao động "
+            "thường xuyên không hoàn thành công việc theo hợp đồng; (2) bị ốm đau, tai nạn đã "
+            "điều trị 12 tháng liên tục (hợp đồng không xác định thời hạn) chưa khỏi; "
+            "(3) thiên tai, hỏa hoạn, dịch bệnh — bắt buộc thu hẹp sản xuất sau khi đã tìm "
+            "mọi biện pháp khắc phục; (4) người lao động đủ tuổi nghỉ hưu (nam 62, nữ 60 theo "
+            "lộ trình). Sa thải trái pháp luật (Điều 41 BLLĐ): người lao động được quyền yêu "
+            "cầu nhận lại việc làm, bồi thường 2 tháng lương cho mỗi năm làm việc, và các "
+            "khoản lương trong thời gian không được làm việc (tối thiểu 2 tháng)."
+        ),
+    },
 ]
 
 
@@ -90,7 +114,11 @@ LEGAL_KNOWLEDGE = [
 
 @tool
 def search_legal_database(query: str) -> str:
-    """Search the legal knowledge base for relevant statutes, case law, and legal principles."""
+    """Search the legal knowledge base for relevant statutes, case law, and legal principles.
+
+    Args:
+        query: Natural language search query about a legal topic.
+    """
     query_words = set(query.lower().split())
     scored = []
     for entry in LEGAL_KNOWLEDGE:
@@ -109,7 +137,12 @@ def search_legal_database(query: str) -> str:
 
 @tool
 def calculate_damages(breach_type: str, contract_value: float) -> str:
-    """Calculate estimated damages for a contract breach based on type and contract value."""
+    """Calculate estimated damages for a contract breach based on type and contract value.
+
+    Args:
+        breach_type: Type of breach — 'willful', 'negligent', or 'standard'.
+        contract_value: The monetary value of the contract in USD.
+    """
     breach_type_lower = breach_type.lower()
     if "willful" in breach_type_lower or "intentional" in breach_type_lower:
         multiplier = 2.0
@@ -135,23 +168,104 @@ def calculate_damages(breach_type: str, contract_value: float) -> str:
     )
 
 
-TOOLS = [search_legal_database, calculate_damages]
+# -----------------------------------------------------------------
+# Bài Tập 2.2: Tool kiểm tra thời hiệu khởi kiện
+# -----------------------------------------------------------------
 
-QUESTION = "What are the legal consequences if a company breaches a non-disclosure agreement?"
+@tool
+def check_statute_of_limitations(case_type: str) -> str:
+    """Kiểm tra thời hiệu khởi kiện (statute of limitations) theo loại vụ án.
+
+    Args:
+        case_type: Loại vụ án. Ví dụ: 'contract', 'tort', 'property',
+                   'trade_secret', 'nda', 'labor'.
+    """
+    limits = {
+        "contract":      "4 năm — UCC § 2-725 (hàng hóa); 6 năm tại một số bang (dịch vụ).",
+        "tort":          "2–3 năm tùy bang; 1 năm cho defamation ở nhiều bang.",
+        "property":      "5 năm (trespass); 10 năm (adverse possession) tùy bang.",
+        "trade_secret":  "3 năm kể từ ngày phát hiện — DTSA (18 U.S.C. § 1836(d)).",
+        "nda":           "3 năm theo DTSA; tính từ ngày vi phạm hoặc ngày phát hiện.",
+        "labor":         "Theo BLLĐ 2019 Điều 190: 1 năm kể từ ngày phát sinh tranh chấp "
+                         "lao động cá nhân (tính dụng tại tòa án); 6 tháng tại hội đồng trọng tài.",
+        "discrimination": "180 ngày nộp khiếu nại lên EEOC (300 ngày nếu có cơ quan tiểu bang).",
+        "fraud":          "3–6 năm tùy bang; chạy từ ngày phát hiện gian lận.",
+    }
+    key = case_type.lower().replace(" ", "_").replace("-", "_")
+    if key in limits:
+        return f"Thời hiệu khởi kiện cho '{case_type}': {limits[key]}"
+    close = [k for k in limits if k in key or key in k]
+    if close:
+        return f"Thời hiệu khởi kiện cho '{close[0]}': {limits[close[0]]}"
+    available = ", ".join(limits.keys())
+    return (
+        f"Không tìm thấy thời hiệu cho loại vụ án '{case_type}'. "
+        f"Các loại hỗ trợ: {available}."
+    )
+
+
+TOOLS = [search_legal_database, calculate_damages, check_statute_of_limitations]
+
+# Đặt câu hỏi bằng tiếng Việt để test toàn bộ knowledge base
+QUESTION = (
+    "Công ty ABC đã vi phạm NDA (thỏa thuận bảo mật) một cách cố ý, "
+    "tiết lộ bí mật thương mại trị giá $200,000. "
+    "Hậu quả pháp lý là gì và chúng tôi còn bao nhiêu thời gian để khởi kiện?"
+)
+
+
+async def run_tool_loop(llm_with_tools, messages: list, tool_map: dict, max_rounds: int = 5) -> str:
+    """
+    Multi-round tool-calling loop.
+
+    Thay vì chỉ 1 pass (Stage 2 gốc), hàm này cho phép LLM tiếp tục
+    gọi thêm tools cho đến khi không còn tool_calls nào hoặc đạt max_rounds.
+    Điều này giúp LLM có thể tự search → tính toán → check SOL trong 1 run.
+    """
+    for round_num in range(1, max_rounds + 1):
+        response = await llm_with_tools.ainvoke(messages)
+        messages.append(response)
+
+        if not response.tool_calls:
+            # LLM đã ra kết quả cuối — kết thúc loop
+            return response.content
+
+        print(f"\n>>> Round {round_num}: LLM gọi {len(response.tool_calls)} tool(s):\n")
+        for tc in response.tool_calls:
+            print(f"  Tool : {tc['name']}")
+            print(f"  Args : {tc['args']}")
+
+            tool_fn = tool_map[tc["name"]]
+            result = await tool_fn.ainvoke(tc["args"])
+            preview = result[:300] + ("..." if len(result) > 300 else "")
+            print(f"  Kết quả: {preview}\n")
+
+            messages.append(ToolMessage(content=result, tool_call_id=tc["id"]))
+
+    # Nếu vẫn còn tool_calls sau max_rounds, ép LLM trả lời
+    final = await llm_with_tools.ainvoke(messages)
+    return final.content
 
 
 async def main():
     print("=" * 70)
-    print("STAGE 2: LLM + RAG / Tools")
+    print("STAGE 2: LLM + RAG / Tools  (hoàn chỉnh)")
     print("=" * 70)
     print()
-    print("[How it works]")
-    print("  1. LLM receives tools (search_legal_database, calculate_damages)")
-    print("  2. LLM decides which tools to call and with what arguments")
-    print("  3. We execute the tools and feed results back to the LLM")
-    print("  4. LLM generates a final answer grounded in retrieved data")
+    print("[Kiến thức mới so với Stage 1]")
+    print("  1. LLM nhận danh sách tools (search_legal_database, calculate_damages,")
+    print("                              check_statute_of_limitations)")
+    print("  2. LLM TỰ QUYẾT ĐỊNH gọi tool nào, với argument gì")
+    print("  3. Tool được execute — kết quả đưa vào context")
+    print("  4. Multi-round loop: LLM có thể gọi nhiều tools liên tiếp")
+    print("  5. Câu trả lời cuối được ground trong dữ liệu thực")
     print()
-    print(f"Question: {QUESTION}")
+    print("[Tools có sẵn]")
+    print("  • search_legal_database       — tra cứu knowledge base pháp lý")
+    print("  • calculate_damages           — tính ước lượng thiệt hại")
+    print("  • check_statute_of_limitations — kiểm tra thời hiệu khởi kiện")
+    print()
+    print(f"Câu hỏi: {QUESTION}")
     print("-" * 70)
 
     llm = get_llm()
@@ -161,56 +275,46 @@ async def main():
     messages = [
         SystemMessage(
             content=(
-                "You are a legal expert with access to a legal knowledge base and a damage "
-                "calculator. Use the tools provided to ground your analysis in specific statutes "
-                "and case law. Always search the database before answering. "
-                "Keep your final response under 400 words."
+                "You are a senior legal expert with access to a legal knowledge base, "
+                "a damage calculator, and a statute-of-limitations checker. "
+                "When answering:\n"
+                "  1. Always call search_legal_database first to ground your answer.\n"
+                "  2. Use calculate_damages when monetary exposure is relevant.\n"
+                "  3. Use check_statute_of_limitations when timing questions arise.\n"
+                "  4. You MAY call multiple tools before giving your final answer.\n"
+                "Keep your final response under 400 words. "
+                "Respond in the same language as the user's question."
             )
         ),
         HumanMessage(content=QUESTION),
     ]
 
-    # --- Step 1: LLM decides which tools to call ---
-    print("\n>>> Step 1: Asking LLM (with tools bound)...\n")
-    response = await llm_with_tools.ainvoke(messages)
-    messages.append(response)
+    print("\n>>> Bắt đầu multi-round tool loop...\n")
+    final_answer = await run_tool_loop(llm_with_tools, messages, tool_map)
 
-    if not response.tool_calls:
-        print("LLM chose not to use any tools. Direct answer:")
-        print(response.content)
-        return
-
-    # --- Step 2: Execute tool calls ---
-    print(f">>> Step 2: LLM requested {len(response.tool_calls)} tool call(s):\n")
-    for tc in response.tool_calls:
-        print(f"  Tool: {tc['name']}")
-        print(f"  Args: {tc['args']}")
-
-        tool_fn = tool_map[tc["name"]]
-        result = await tool_fn.ainvoke(tc["args"])
-        print(f"  Result: {result[:200]}{'...' if len(result) > 200 else ''}")
-        print()
-
-        messages.append(ToolMessage(content=result, tool_call_id=tc["id"]))
-
-    # --- Step 3: LLM generates final grounded answer ---
-    print(">>> Step 3: LLM generating final answer with tool results...\n")
-    final_response = await llm_with_tools.ainvoke(messages)
-    print(final_response.content)
+    print("\n" + "=" * 70)
+    print("KẾT QUẢ CUỐI CÙNG")
+    print("=" * 70)
+    print(final_answer)
 
     print()
     print("-" * 70)
-    print("[Improvements over Stage 1]")
-    print("  + Grounded: answers cite specific statutes (DTSA, UCC, etc.)")
-    print("  + Tool use: can search databases and calculate damages")
-    print("  + More accurate: retrieval reduces hallucination risk")
+    print("[So sánh Stage 1 vs Stage 2]")
     print()
-    print("[Limitations of Stage 2]")
-    print("  - Manual orchestration: we wrote the tool-call loop ourselves")
-    print("  - Single pass: only one round of tool calls")
-    print("  - No reasoning loop: LLM can't decide to search again if needed")
+    print("  Stage 1 (Direct LLM)          Stage 2 (RAG + Tools)")
+    print("  ──────────────────────────    ─────────────────────────────────")
+    print("  Chỉ dựa training data         Tra cứu knowledge base thực tế")
+    print("  Không tính toán được          Tính thiệt hại chính xác")
+    print("  Không biết thời hiệu          Check SOL theo loại vụ án")
+    print("  Có thể hallucinate statute    Cite đúng § cụ thể từ KB")
+    print("  1 lần gọi LLM                 Multi-round: search → calc → answer")
     print()
-    print("Next: Stage 3 wraps this in an autonomous ReAct agent loop.")
+    print("[Hạn chế của Stage 2]")
+    print("  - Orchestration vẫn manual (chúng ta viết tool loop)")
+    print("  - LLM không tự quyết định 'search lại' nếu kết quả chưa đủ")
+    print("  - Không có memory giữa các câu hỏi")
+    print()
+    print("→ Stage 3 giải quyết bằng ReAct Agent loop tự động.")
     print("=" * 70)
 
 

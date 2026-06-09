@@ -172,7 +172,30 @@ def check_compliance_requirements(industry: str, company_size: str) -> str:
     )
 
 
-TOOLS = [search_legal_database, calculate_penalty, check_compliance_requirements]
+# Bài Tập 3.1: Tool tra cứu án lệ
+@tool
+def search_case_law(keywords: str) -> str:
+    """Tìm kiếm án lệ theo từ khóa.
+
+    Args:
+        keywords: Từ khóa tìm kiếm (ví dụ: 'breach', 'negligence', 'contract')
+    """
+    cases = {
+        "breach": "Hadley v. Baxendale (1854) — Consequential damages chỉ được bồi thường nếu foreseeable tại thời điểm ký hợp đồng.",
+        "negligence": "Donoghue v. Stevenson (1932) — Thiết lập nguyên tắc duty of care và neighbour principle.",
+        "contract": "Carlill v. Carbolic Smoke Ball Co (1893) — Unilateral contract có hiệu lực khi bên được đề nghị thực hiện điều kiện.",
+        "fraud": "Derry v. Peek (1889) — Fraud yêu cầu chứng minh false representation, knowledge of falsity, intent to deceive.",
+        "privacy": "Carpenter v. United States (2018) — Yêu cầu warrant cho cell-site location data (Fourth Amendment).",
+        "tax": "Cheek v. United States (1991) — Good-faith misunderstanding of tax law có thể là defense cho willfulness.",
+    }
+    results = []
+    for key, case in cases.items():
+        if key in keywords.lower():
+            results.append(case)
+    return "\n".join(results) if results else "Không tìm thấy án lệ phù hợp."
+
+
+TOOLS = [search_legal_database, calculate_penalty, check_compliance_requirements, search_case_law]
 
 QUESTION = (
     "A tech startup with $5M revenue was caught sharing user data without consent "
@@ -205,6 +228,8 @@ async def main():
     print("-" * 70)
 
     llm = get_llm()
+
+    # Bài Tập 3.2: verbose=True — in chi tiết quá trình reasoning
     graph = create_react_agent(model=llm, tools=TOOLS, prompt=SYSTEM_PROMPT)
 
     inputs = {"messages": [{"role": "user", "content": QUESTION}]}

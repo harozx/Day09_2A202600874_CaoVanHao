@@ -53,7 +53,7 @@ class LawState(TypedDict):
 
 async def analyze_law(state: LawState) -> dict:
     """LLM analysis from a contract / general law perspective."""
-    llm = get_llm()
+    llm = get_llm(max_tokens=512)  # Shorter output = faster response
     messages = [
         SystemMessage(
             content=(
@@ -71,6 +71,9 @@ async def analyze_law(state: LawState) -> dict:
 async def check_routing(state: LawState) -> dict:
     """Determine whether tax and/or compliance sub-agents are needed.
 
+    OPTIMIZED: Uses fast keyword matching instead of an LLM call.
+    This eliminates ~3-5 seconds of latency from the critical path.
+
     Returns updated state flags so the routing function can read them.
     If delegation depth is already at the max, skip further delegation.
     """
@@ -79,39 +82,18 @@ async def check_routing(state: LawState) -> dict:
         logger.info("Max delegation depth reached (%d); skipping sub-agents", depth)
         return {"needs_tax": False, "needs_compliance": False}
 
-    llm = get_llm()
-    messages = [
-        SystemMessage(
-            content=(
-                'You are a legal routing expert. Based on the question, decide whether '
-                'specialist sub-agents are needed.\n'
-                'Reply with ONLY valid JSON — no markdown, no extra text:\n'
-                '{"needs_tax": <true|false>, "needs_compliance": <true|false>}\n\n'
-                'needs_tax = true  → question involves tax law, IRS, tax evasion, penalties\n'
-                'needs_compliance = true → question involves regulatory compliance, SEC, SOX, AML, FCPA'
-            )
-        ),
-        HumanMessage(content=state["question"]),
-    ]
-    result = await llm.ainvoke(messages)
-    raw = result.content.strip()
+    question_lower = state["question"].lower()
 
-    # Strip markdown code fences if present
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-        raw = raw.strip()
+    TAX_KEYWORDS = ["tax", "taxes", "irs", "evasion", "revenue", "fbar", "fatca", "income",
+                    "deduction", "penalty", "offshore", "thuế", "avoid"]
+    COMPLIANCE_KEYWORDS = ["compliance", "sec", "sox", "fcpa", "gdpr", "ccpa",
+                           "regulation", "aml", "bsa", "data", "privacy",
+                           "sarbanes", "reporting", "tuân thủ"]
 
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        logger.warning("Routing LLM returned non-JSON: %r — defaulting to both=True", raw)
-        parsed = {"needs_tax": True, "needs_compliance": True}
+    needs_tax = any(kw in question_lower for kw in TAX_KEYWORDS)
+    needs_compliance = any(kw in question_lower for kw in COMPLIANCE_KEYWORDS)
 
-    needs_tax = bool(parsed.get("needs_tax", True))
-    needs_compliance = bool(parsed.get("needs_compliance", True))
-    logger.info("Routing decision: needs_tax=%s needs_compliance=%s", needs_tax, needs_compliance)
+    logger.info("Routing decision (keyword): needs_tax=%s needs_compliance=%s", needs_tax, needs_compliance)
     return {"needs_tax": needs_tax, "needs_compliance": needs_compliance}
 
 
@@ -176,7 +158,7 @@ async def call_compliance(state: LawState) -> dict:
 
 async def aggregate(state: LawState) -> dict:
     """Combine law_analysis, tax_result, and compliance_result into a final answer."""
-    llm = get_llm()
+    llm = get_llm(max_tokens=512)  # Shorter output = faster response
 
     sections: list[str] = []
     if state.get("law_analysis"):
